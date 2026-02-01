@@ -302,7 +302,8 @@ async function connectWS(){
         ...(systemInstruction ? { systemInstruction } : {})
       }
     });
-  };*/
+  };
+  */
 
   ws.onopen = () => {
     setStatus("good","接続中（setup送信）");
@@ -326,12 +327,11 @@ async function connectWS(){
         ...(systemInstruction ? { systemInstruction } : {})
       }
     };
-    /*　↑　2026/02/01 16:56 変更　*/
   
     console.log("[WS OUT][setup]", setup); // ★要望：console.log
     wsSend(setup);
   };
-
+  /*　↑　2026/02/01 16:56 変更　*/
 
   ws.onerror = (e) => {
     console.log("[WS ERROR]", e);
