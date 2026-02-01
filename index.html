@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Gemini Native Audio Dialog - Chunked Mic → Chat (Single HTML)</title>
+  <title>Gemini Native Audio Dialog - RealtimeInput Mic → Chat (Single HTML)</title>
   <style>
     :root {
       --bg:#0b0f19; --text:#e7ecff; --muted:#aab3d6; --accent:#7aa2ff;
@@ -58,7 +58,7 @@
 <header>
   <h1>Gemini Native Audio Dialog（音声→AI、AI→チャット表示）テスト</h1>
   <p class="sub">
-    修正版：送信を「1ターンずつ順番に」して Precondition check failed を回避。AI返答は常に console.log へ出力。
+    修正版：音声は realtimeInput.media_chunks で送る（clientContentに音声を載せない）。VAD無効＋ActivityStart/Endでクール区切り。
   </p>
 </header>
 
@@ -77,18 +77,18 @@
 
       <div class="row">
         <div>
-          <label>1クール秒数（録音→キュー追加）</label>
+          <label>1クール秒数（録音→送信）</label>
           <input id="cycleSec" type="number" min="1" max="15" step="1" value="3" />
         </div>
         <div>
           <label>AI音声を再生（任意）</label>
           <input id="playAudio" type="checkbox" />
-          <div class="small">OFFでもOK（チャットは transcription で表示）</div>
+          <div class="small">OFFでもOK（チャットは outputTranscription で表示）</div>
         </div>
       </div>
 
       <label>システム指示（任意）</label>
-      <textarea id="systemInstruction" placeholder="例：日本語で簡潔。途中で区切れているなら返答を保留して次のクールを待ってよい。"></textarea>
+      <textarea id="systemInstruction" placeholder="例：日本語で簡潔。音声が途中で区切れているなら返答を保留して次のクールを待ってよい。"></textarea>
 
       <div class="btns">
         <button id="btnStart">シミュレート開始</button>
@@ -97,8 +97,8 @@
       </div>
 
       <p class="small warn">
-        ※ 送信は turnComplete を待って順番に行います（録音は継続し、送信待ちはキューに貯めます）。<br/>
-        ※ Live APIで「Precondition check failed」が出るケースの回避策です。 :contentReference[oaicite:1]{index=1}
+        ※ 音声は realtimeInput で送信します（仕様上、realtimeInput は連続送信でき、clientContent は会話履歴/テキスト向け）。:contentReference[oaicite:2]{index=2}
+        <br>※ VAD無効時は ActivityStart/End を送る必要があります。:contentReference[oaicite:3]{index=3}
       </p>
 
       <div class="small" id="debugBox"></div>
@@ -111,8 +111,6 @@
       <div class="status">
         <span class="pill" id="turnInfo">turn: 0</span>
         <span class="pill" id="chunkInfo">chunk: 0</span>
-        <span class="pill" id="queueInfo">queue: 0</span>
-        <span class="pill" id="sendingInfo">sending: false</span>
       </div>
     </div>
     <div class="chat" id="chat"></div>
@@ -139,8 +137,6 @@ const ui = {
   chat: el("chat"),
   turnInfo: el("turnInfo"),
   chunkInfo: el("chunkInfo"),
-  queueInfo: el("queueInfo"),
-  sendingInfo: el("sendingInfo"),
 };
 
 let ws = null;
@@ -158,21 +154,18 @@ let playbackCtx = null;
 // State
 let running = false;
 let cycleTimer = null;
+let setupDone = false;
 
 let turnCount = 0;
 let chunkCount = 0;
 
-// 1クール分
+// 1クール分のPCM(16k/16bit)を貯める
 let pcmBytesQueue = [];
 
-// 送信キュー（turnComplete待ちで順番に送る）
-let sendQueue = []; // { chunkId, base64, bytesLen }
-let sending = false;
+// UI紐付け（入力転写が来たら追記）
+let pendingUserChunks = [];
 
-// UI紐付け（転写追記）
-let pendingUserChunks = []; // [{id, domEl}]
-
-// AI出力転写（turnCompleteまで）
+// AI出力転写（turnCompleteまで蓄積）
 let currentAssistantText = "";
 
 // ---------- UI helpers ----------
@@ -213,13 +206,11 @@ function addMessage(role, text, extraPills=[]){
 function updateCounters(){
   ui.turnInfo.textContent = "turn: " + turnCount;
   ui.chunkInfo.textContent = "chunk: " + chunkCount;
-  ui.queueInfo.textContent = "queue: " + sendQueue.length;
-  ui.sendingInfo.textContent = "sending: " + (sending ? "true" : "false");
 }
 function resetStateAll(){
   turnCount=0; chunkCount=0;
-  pcmBytesQueue=[]; sendQueue=[]; sending=false;
-  pendingUserChunks=[]; currentAssistantText="";
+  pcmBytesQueue=[]; pendingUserChunks=[]; currentAssistantText="";
+  setupDone=false;
   updateCounters(); setStatus("","未接続"); logDebug("");
 }
 
@@ -289,6 +280,10 @@ async function connectWS(){
     const model=ui.modelName.value.trim();
     const systemInstruction=ui.systemInstruction.value.trim();
 
+    // ★重要：
+    // - 音声は realtimeInput で送る
+    // - クール区切りのため VAD を無効化し、ActivityStart/End を自前で送る
+    // 仕様: realtimeInput/media_chunks, VAD disabled, ActivityStart/End :contentReference[oaicite:4]{index=4}
     wsSend({
       setup: {
         model,
@@ -299,6 +294,9 @@ async function connectWS(){
         },
         inputAudioTranscription: {},
         outputAudioTranscription: {},
+        realtimeInputConfig: {
+          automaticActivityDetection: { disabled: true }
+        },
         ...(systemInstruction ? { systemInstruction } : {})
       }
     });
@@ -312,7 +310,6 @@ async function connectWS(){
   ws.onclose = (e) => {
     console.log("[WS CLOSE]", { code: e.code, reason: e.reason });
     setStatus("bad","切断: " + (e.reason || ("code="+e.code)));
-    // サーバ側で落ちた場合は録音も止める（要件的に停止＝忘却でOK）
     if (running) stopSimulation();
   };
 
@@ -320,22 +317,21 @@ async function connectWS(){
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
 
-    // ★常にログ（要望）
+    // ★要望：常に受信ログ
     console.log("[WS IN]", msg);
 
     if(msg.setupComplete){
+      setupDone = true;
       setStatus("good","接続完了（録音中）");
       return;
     }
 
-    // 転写は serverContent 内で来るのが基本（公式サンプルでも serverContent.outputTranscription）
-    // 実装差分を吸収してトップレベルも一応拾う（来てもOKにする）
     const sc = msg.serverContent || null;
 
+    // inputTranscription / outputTranscription はトップレベルで来ることがある :contentReference[oaicite:5]{index=5}
     const inputT =
       (sc && sc.inputTranscription && sc.inputTranscription.text) ||
-      (msg.inputTranscription && msg.inputTranscription.text) ||
-      "";
+      (msg.inputTranscription && msg.inputTranscription.text) || "";
 
     if (inputT) {
       const t = String(inputT).trim();
@@ -348,12 +344,11 @@ async function connectWS(){
 
     const outputT =
       (sc && sc.outputTranscription && sc.outputTranscription.text) ||
-      (msg.outputTranscription && msg.outputTranscription.text) ||
-      "";
+      (msg.outputTranscription && msg.outputTranscription.text) || "";
 
     if (outputT) {
       currentAssistantText += String(outputT);
-      console.log("[AI OUTPUT TRANSCRIPTION +]", String(outputT));
+      console.log("[AI OUT +]", String(outputT));
     }
 
     // AI音声（任意再生）
@@ -365,22 +360,18 @@ async function connectWS(){
       }
     }
 
-    // turnCompleteを受けたら「AIメッセージ確定」+「次の送信へ」
+    // ターン確定
     if (sc && sc.turnComplete) {
       const out = (currentAssistantText || "").trim();
       if (out) {
         addMessage("ai", out, ["outputTranscription", "turnComplete"]);
-        console.log("[AI TURN COMPLETE TEXT]", out);
+        console.log("[AI TURN COMPLETE]", out);
         turnCount++;
+        updateCounters();
       } else {
         console.log("[AI TURN COMPLETE] (no transcript text)");
       }
       currentAssistantText = "";
-
-      // ★ここが重要：前ターン完了 → 次のキュー送信
-      sending = false;
-      updateCounters();
-      maybeSendNext();
     }
   };
 
@@ -398,8 +389,6 @@ function makeCaptureWorkletURL(){
     process(inputs, outputs) {
       const input = inputs[0];
       const output = outputs[0];
-
-      // pass-through (下流で gain=0)
       if (input && input[0] && output && output[0]) {
         output[0].set(input[0]);
         const copy = new Float32Array(input[0].length);
@@ -437,7 +426,7 @@ async function startMic(){
     channelCount: 1
   });
 
-  // keep alive (無音でdestinationへ接続)
+  // keep alive（Chrome対策）
   keepAliveGain = audioCtx.createGain();
   keepAliveGain.gain.value = 0;
   workletNode.connect(keepAliveGain).connect(audioCtx.destination);
@@ -470,8 +459,13 @@ function stopMic(){
   }
 }
 
-// ---------- Chunk queue & send sequencing ----------
-function flushCycleToQueue(){
+// ---------- RealtimeInput send (per cycle) ----------
+function flushCycleSendRealtime(){
+  if(!ws || ws.readyState!==WebSocket.OPEN) return;
+  if(!setupDone) {
+    console.log("[SKIP] setup not complete yet");
+    return;
+  }
   if(pcmBytesQueue.length===0) return;
 
   const merged = concatUint8(pcmBytesQueue);
@@ -479,57 +473,23 @@ function flushCycleToQueue(){
 
   const base64 = uint8ToBase64(merged);
   chunkCount++;
-
-  // UI: ユーザー送信 “予定” を表示（ここではキュー追加）
-  const domEl = addMessage("you", `Audio chunk #${chunkCount} をキュー追加（${merged.length} bytes / pcm16@16k）`, ["queued","audio"]);
-  pendingUserChunks.push({id:chunkCount, domEl});
-
-  sendQueue.push({ chunkId: chunkCount, base64, bytesLen: merged.length });
   updateCounters();
 
-  // 送れるなら送る
-  maybeSendNext();
-}
+  const domEl = addMessage("you", `Audio chunk #${chunkCount} 送信（${merged.length} bytes / pcm16@16k / realtimeInput）`, ["realtimeInput","chunk"]);
+  pendingUserChunks.push({ id: chunkCount, domEl });
 
-function maybeSendNext(){
-  if(!ws || ws.readyState!==WebSocket.OPEN) return;
-  if(sending) return;
-  if(sendQueue.length===0) return;
-
-  const item = sendQueue.shift();
-  sending = true;
-  updateCounters();
-
-  // UI: キュー→送信中に表示差し替え（該当msgを探して追記）
-  const entry = pendingUserChunks.find(x => x.id === item.chunkId);
-  if(entry){
-    const bodyEl = entry.domEl.querySelector(".text");
-    bodyEl.textContent = `Audio chunk #${item.chunkId} を送信（${item.bytesLen} bytes / pcm16@16k）`;
-    entry.domEl.querySelectorAll(".pill").forEach(()=>{});
-  }
-
-  console.log("[WS OUT] send clientContent chunkId=", item.chunkId, "bytes=", item.bytesLen);
-
-  // ★turnComplete=true を「順番に」送る（前が終わるまで次を送らない）
+  // ★クール単位で ActivityStart/End を送る（VAD disabled 前提） :contentReference[oaicite:6]{index=6}
+  wsSend({ realtimeInput: { activityStart: {} } });
   wsSend({
-    clientContent: {
-      turns: [{
-        role: "user",
-        parts: [{ inlineData: { mimeType:"audio/pcm;rate=16000", data: item.base64 } }]
-      }],
-      turnComplete: true
+    realtimeInput: {
+      mediaChunks: [
+        { mimeType: "audio/pcm;rate=16000", data: base64 }
+      ]
     }
   });
+  wsSend({ realtimeInput: { activityEnd: {} } });
 
-  // 安全策：もし何らかの理由で turnComplete が返らない場合に備えタイムアウト解除
-  setTimeout(() => {
-    if (sending) {
-      console.log("[WARN] turnComplete timeout → force unlock sending");
-      sending = false;
-      updateCounters();
-      maybeSendNext();
-    }
-  }, 20000);
+  console.log("[WS OUT] realtimeInput cycle=", chunkCount, "bytes=", merged.length);
 }
 
 // ---------- optional playback (assume 24k PCM16LE) ----------
@@ -568,11 +528,11 @@ async function startSimulation(){
     await startMic();
 
     const cycle = Math.max(1, Math.min(15, Number(ui.cycleSec.value || 3)));
-    cycleTimer = setInterval(flushCycleToQueue, cycle*1000);
+    cycleTimer = setInterval(flushCycleSendRealtime, cycle*1000);
 
     logDebug(`<div class="small">
-      cycle: <b>${cycle}s</b> / send: <b>sequential (wait turnComplete)</b><br/>
-      Tip: queueが増え続ける場合は cycle秒数を少し上げると安定しやすいです。
+      cycle: <b>${cycle}s</b><br/>
+      send: <b>realtimeInput.mediaChunks</b> + <b>ActivityStart/End</b> (VAD disabled)
     </div>`);
 
     addMessage("ai", "接続しました。話しかけてください。（AI返答は console.log にも常に出ます）", ["system"]);
@@ -592,10 +552,8 @@ async function stopSimulation(){
 
   if(cycleTimer){ clearInterval(cycleTimer); cycleTimer=null; }
 
-  // 停止＝忘却：未送信/送信待ちは破棄
   pcmBytesQueue = [];
-  sendQueue = [];
-  sending = false;
+  setupDone = false;
 
   stopMic();
 
