@@ -304,7 +304,8 @@ async function connectWS(){
     });
   };
   */
-
+  /*　↓　2026/02/01 17:55 変更　*/
+  /*
   ws.onopen = () => {
     setStatus("good","接続中（setup送信）");
     const model = ui.modelName.value.trim();
@@ -333,6 +334,39 @@ async function connectWS(){
     console.log("[DEBUG] setup sent, waiting for setupComplete...");
   };
   /*　↑　2026/02/01 16:56 変更　*/
+
+  ws.onopen = () => {
+    setStatus("good", "接続中（setup送信）");
+  
+    const model = ui.modelName.value.trim();
+    const rawSI = ui.systemInstruction.value || "";
+    const si = sanitizeSystemText(rawSI).trim();
+    //const si = sanitizeSystemText(rawSI).trim().slice(0, 4000);
+  
+    const setup = {
+      setup: {
+        model,
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          temperature: 0.4,
+          maxOutputTokens: 1024
+        },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+        // ★ systemInstruction は Content 型で送る
+        ...(si ? {
+          systemInstruction: {
+            parts: [{ text: si }]
+          }
+        } : {})
+      }
+    };
+  
+    console.log("[WS OUT][setup]", setup);
+    console.log("[DEBUG] setup sent, waiting for setupComplete...");
+    wsSend(setup);
+  };
+  /*　↑　2026/02/01 17:55 変更　*/
 
   ws.onerror = (e) => {
     console.log("[WS ERROR]", e);
@@ -750,6 +784,14 @@ function sanitizeToUtf8SafeString(str) {
   }
 }
 /*　↑　2026/02/01 16:55 追加　*/
+
+/*　↓　2026/02/01 17:54 追加　*/
+function sanitizeSystemText(str) {
+  const s = String(str ?? "");
+  // 孤立サロゲート(UTF-8不正の元)を除去
+  return s.replace(/[\uD800-\uDFFF]/g, "");
+}
+/*　↑　2026/02/01 17:54 追加　*/
 
 
 ui.btnStart.addEventListener("click", startSimulation);
