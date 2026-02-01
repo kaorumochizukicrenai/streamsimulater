@@ -275,6 +275,8 @@ async function connectWS(){
   const url = WS_BASE + "?key=" + encodeURIComponent(key);
   ws = new WebSocket(url);
 
+  /*　↓　2026/02/01 16:56 変更　*/
+  /*
   ws.onopen = () => {
     setStatus("good","接続中（setup送信）");
     const model=ui.modelName.value.trim();
@@ -300,7 +302,36 @@ async function connectWS(){
         ...(systemInstruction ? { systemInstruction } : {})
       }
     });
+  };*/
+
+  ws.onopen = () => {
+    setStatus("good","接続中（setup送信）");
+    const model = ui.modelName.value.trim();
+  
+    const rawSI = ui.systemInstruction.value || "";
+    const systemInstruction = sanitizeToUtf8SafeString(rawSI).trim();
+  
+    const setup = {
+      setup: {
+        model,
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          temperature: 0.4,
+          maxOutputTokens: 1024
+        },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+        // ★ここは入れない（自動VAD有効のまま）
+        // realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
+        ...(systemInstruction ? { systemInstruction } : {})
+      }
+    };
+    /*　↑　2026/02/01 16:56 変更　*/
+  
+    console.log("[WS OUT][setup]", setup); // ★要望：console.log
+    wsSend(setup);
   };
+
 
   ws.onerror = (e) => {
     console.log("[WS ERROR]", e);
@@ -460,6 +491,9 @@ function stopMic(){
 }
 
 // ---------- RealtimeInput send (per cycle) ----------
+
+/*　↓　2026/02/01 16:57 変更　*/
+/*
 function flushCycleSendRealtime(){
   if(!ws || ws.readyState!==WebSocket.OPEN) return;
   if(!setupDone) {
@@ -491,6 +525,40 @@ function flushCycleSendRealtime(){
 
   console.log("[WS OUT] realtimeInput cycle=", chunkCount, "bytes=", merged.length);
 }
+*/
+
+function flushCycleSendRealtime(){
+  if(!ws || ws.readyState!==WebSocket.OPEN) return;
+  if(!setupDone) return; // setupComplete後のみ
+  if(pcmBytesQueue.length===0) return;
+
+  const merged = concatUint8(pcmBytesQueue);
+  pcmBytesQueue = [];
+
+  const base64 = uint8ToBase64(merged);
+  chunkCount++;
+  updateCounters();
+
+  const domEl = addMessage(
+    "you",
+    `Audio chunk #${chunkCount} 送信（${merged.length} bytes / pcm16@16k / realtimeInput.audio）`,
+    ["realtimeInput","audio"]
+  );
+  pendingUserChunks.push({ id: chunkCount, domEl });
+
+  const payload = {
+    realtimeInput: {
+      audio: {
+        mimeType: "audio/pcm;rate=16000",
+        data: base64
+      }
+    }
+  };
+
+  console.log("[WS OUT][realtimeInput.audio]", { chunk: chunkCount, bytes: merged.length });
+  wsSend(payload);
+}
+/*　↑　2026/02/01 16:57 変更　*/
 
 // ---------- optional playback (assume 24k PCM16LE) ----------
 async function playPcm24k(base64Pcm){
@@ -557,6 +625,14 @@ async function stopSimulation(){
 
   stopMic();
 
+  /*　↓　2026/02/01 17:00 追加　*/
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    const endPayload = { realtimeInput: { audioStreamEnd: true } };
+    console.log("[WS OUT][audioStreamEnd]", endPayload);
+    wsSend(endPayload);
+  }
+  /*　↑　2026/02/01 17:00 追加　*/
+  
   if(ws){
     try{ ws.close(1000,"user stopped"); }catch{}
     ws=null;
@@ -565,6 +641,20 @@ async function stopSimulation(){
   clearChat();
   resetStateAll();
 }
+
+/*　↓　2026/02/01 16:55 追加　*/
+function sanitizeToUtf8SafeString(str) {
+  // 不正なサロゲート等を安全化（UTF-8で送れる形に）
+  try {
+    const enc = new TextEncoder();
+    const dec = new TextDecoder("utf-8", { fatal: false });
+    return dec.decode(enc.encode(String(str)));
+  } catch {
+    return String(str);
+  }
+}
+/*　↑　2026/02/01 16:55 追加　*/
+
 
 ui.btnStart.addEventListener("click", startSimulation);
 ui.btnStop.addEventListener("click", stopSimulation);
