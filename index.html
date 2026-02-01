@@ -78,7 +78,7 @@
       <div class="row">
         <div>
           <label>1クール秒数（録音→送信）</label>
-          <input id="cycleSec" type="number" min="1" max="15" step="1" value="3" />
+          <input id="cycleSec" type="number" min="1" max="15" step="1" value="6" />
         </div>
         <div>
           <label>AI音声を再生（任意）</label>
@@ -88,7 +88,9 @@
       </div>
 
       <label>システム指示（任意）</label>
-      <textarea id="systemInstruction" placeholder="例：日本語で簡潔。音声が途中で区切れているなら返答を保留して次のクールを待ってよい。"></textarea>
+      <textarea id="systemInstruction" placeholder="例：日本語で簡潔。音声が途中で区切れているなら返答を保留して次のクールを待ってよい。">
+        貴方は、私の配信を見ながらコメントをしているリスナーです。スマホの入力として送りそうな短い内容で送信してください。記号や絵文字などによる感情の付与も、あったりなかったりランダムで操作してほしいです。またあなたは、私のすべての発言に対してコメントをするとは限らないです。ランダムでわざと返答しなかったり、他のリスナーもいる想定で、先ほどまでとは違う話題も進行するかもしれないことを、あなたと私は認知している前提でお願いします。さらに、文章が途切れている可能性がある場合は、無理に返答しないで良いです。さらにさらに、明らかに私からの返答が的を外れている場合、もしくはランダムで今の話題について、もしくはランダムで突然話題を変えて、あなたから私に疑問や質問を送っても、送らなくても構いません。
+      </textarea>
 
       <div class="btns">
         <button id="btnStart">シミュレート開始</button>
@@ -800,12 +802,16 @@ function flushCycleSendRealtime(){
   chunkCount++;
   updateCounters();
 
+  /*　↓　2026/02/01 18:36 変更　*/
+  /*
   const domEl = addMessage(
     "you",
     `Audio chunk #${chunkCount} 送信（${merged.length} bytes / pcm16@16k / realtimeInput.audio）`,
     ["realtimeInput","audio"]
   );
   pendingUserChunks.push({ id: chunkCount, domEl });
+  */
+  /*　↑　2026/02/01 18:36 変更　*/
 
   const payload = {
     realtimeInput: {
