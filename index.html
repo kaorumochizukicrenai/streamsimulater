@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Gemini Native Audio Dialog - Mic chunks → Chat (Single HTML)</title>
+  <title>Gemini Native Audio Dialog - Chunked Mic → Chat (Single HTML)</title>
   <style>
     :root {
-      --bg: #0b0f19; --text: #e7ecff; --muted: #aab3d6; --accent:#7aa2ff;
+      --bg:#0b0f19; --text:#e7ecff; --muted:#aab3d6; --accent:#7aa2ff;
       --bad:#ff6b6b; --good:#33d69f; --border:rgba(255,255,255,.08); --shadow:rgba(0,0,0,.35);
     }
     *{box-sizing:border-box}
@@ -57,7 +57,9 @@
 <body>
 <header>
   <h1>Gemini Native Audio Dialog（音声→AI、AI→チャット表示）テスト</h1>
-  <p class="sub">修正版：transcriptionの受信位置修正 + AudioWorkletをdestinationへ無音接続して処理停止を回避。</p>
+  <p class="sub">
+    修正版：送信を「1ターンずつ順番に」して Precondition check failed を回避。AI返答は常に console.log へ出力。
+  </p>
 </header>
 
 <main>
@@ -75,7 +77,7 @@
 
       <div class="row">
         <div>
-          <label>1クール秒数（録音→送信）</label>
+          <label>1クール秒数（録音→キュー追加）</label>
           <input id="cycleSec" type="number" min="1" max="15" step="1" value="3" />
         </div>
         <div>
@@ -94,9 +96,9 @@
         <button id="btnClear" class="ghost">表示クリア</button>
       </div>
 
-      <p class="small warn" id="note">
-        ※ transcriptionは serverContent と順序保証なしでトップレベルに来ることがあります。 :contentReference[oaicite:4]{index=4}
-        <br/>※ AudioWorkletはdestination未接続だと処理が止まることがあるため無音接続します。 :contentReference[oaicite:5]{index=5}
+      <p class="small warn">
+        ※ 送信は turnComplete を待って順番に行います（録音は継続し、送信待ちはキューに貯めます）。<br/>
+        ※ Live APIで「Precondition check failed」が出るケースの回避策です。 :contentReference[oaicite:1]{index=1}
       </p>
 
       <div class="small" id="debugBox"></div>
@@ -109,6 +111,8 @@
       <div class="status">
         <span class="pill" id="turnInfo">turn: 0</span>
         <span class="pill" id="chunkInfo">chunk: 0</span>
+        <span class="pill" id="queueInfo">queue: 0</span>
+        <span class="pill" id="sendingInfo">sending: false</span>
       </div>
     </div>
     <div class="chat" id="chat"></div>
@@ -121,10 +125,22 @@ const WS_BASE =
 
 const el = (id) => document.getElementById(id);
 const ui = {
-  apiKey: el("apiKey"), modelName: el("modelName"), cycleSec: el("cycleSec"), playAudio: el("playAudio"),
-  systemInstruction: el("systemInstruction"), btnStart: el("btnStart"), btnStop: el("btnStop"), btnClear: el("btnClear"),
-  statusDot: el("statusDot"), statusText: el("statusText"), debugBox: el("debugBox"), chat: el("chat"),
-  turnInfo: el("turnInfo"), chunkInfo: el("chunkInfo"),
+  apiKey: el("apiKey"),
+  modelName: el("modelName"),
+  cycleSec: el("cycleSec"),
+  playAudio: el("playAudio"),
+  systemInstruction: el("systemInstruction"),
+  btnStart: el("btnStart"),
+  btnStop: el("btnStop"),
+  btnClear: el("btnClear"),
+  statusDot: el("statusDot"),
+  statusText: el("statusText"),
+  debugBox: el("debugBox"),
+  chat: el("chat"),
+  turnInfo: el("turnInfo"),
+  chunkInfo: el("chunkInfo"),
+  queueInfo: el("queueInfo"),
+  sendingInfo: el("sendingInfo"),
 };
 
 let ws = null;
@@ -134,7 +150,7 @@ let audioCtx = null;
 let mediaStream = null;
 let sourceNode = null;
 let workletNode = null;
-let keepAliveGain = null; // ★destinationに無音接続するため
+let keepAliveGain = null;
 
 // Optional playback
 let playbackCtx = null;
@@ -142,12 +158,24 @@ let playbackCtx = null;
 // State
 let running = false;
 let cycleTimer = null;
+
 let turnCount = 0;
 let chunkCount = 0;
-let pcmBytesQueue = [];         // 1クール分
-let pendingUserChunks = [];     // UI紐付け
-let currentAssistantText = "";  // outputTranscription蓄積（turnCompleteまで）
 
+// 1クール分
+let pcmBytesQueue = [];
+
+// 送信キュー（turnComplete待ちで順番に送る）
+let sendQueue = []; // { chunkId, base64, bytesLen }
+let sending = false;
+
+// UI紐付け（転写追記）
+let pendingUserChunks = []; // [{id, domEl}]
+
+// AI出力転写（turnCompleteまで）
+let currentAssistantText = "";
+
+// ---------- UI helpers ----------
 function setStatus(kind, text) {
   ui.statusText.textContent = text;
   ui.statusDot.classList.remove("good","bad");
@@ -155,34 +183,47 @@ function setStatus(kind, text) {
   if (kind==="bad") ui.statusDot.classList.add("bad");
 }
 function logDebug(html){ ui.debugBox.innerHTML = html; }
-function updateCounters(){
-  ui.turnInfo.textContent = "turn: " + turnCount;
-  ui.chunkInfo.textContent = "chunk: " + chunkCount;
-}
 function clearChat(){ ui.chat.innerHTML = ""; }
-function resetStateAll(){
-  turnCount=0; chunkCount=0;
-  pcmBytesQueue=[]; pendingUserChunks=[]; currentAssistantText="";
-  updateCounters(); setStatus("","未接続"); logDebug("");
-}
 function addMessage(role, text, extraPills=[]){
   const msg=document.createElement("div");
   msg.className="msg " + (role==="you" ? "you":"ai");
   const meta=document.createElement("div"); meta.className="meta";
-  const roleEl=document.createElement("span"); roleEl.className="role"; roleEl.textContent= role==="you"?"YOU":"AI";
+
+  const roleEl=document.createElement("span"); roleEl.className="role";
+  roleEl.textContent= role==="you"?"YOU":"AI";
   meta.appendChild(roleEl);
-  const tsEl=document.createElement("span"); tsEl.className="pill"; tsEl.textContent=new Date().toLocaleTimeString();
+
+  const tsEl=document.createElement("span"); tsEl.className="pill";
+  tsEl.textContent=new Date().toLocaleTimeString();
   meta.appendChild(tsEl);
+
   for(const p of extraPills){
-    const pill=document.createElement("span"); pill.className="pill"; pill.textContent=p; meta.appendChild(pill);
+    const pill=document.createElement("span"); pill.className="pill";
+    pill.textContent=p; meta.appendChild(pill);
   }
-  const body=document.createElement("div"); body.className="text"; body.textContent=text;
+
+  const body=document.createElement("div"); body.className="text";
+  body.textContent=text;
+
   msg.appendChild(meta); msg.appendChild(body);
-  ui.chat.appendChild(msg); ui.chat.scrollTop=ui.chat.scrollHeight;
+  ui.chat.appendChild(msg);
+  ui.chat.scrollTop=ui.chat.scrollHeight;
   return msg;
 }
+function updateCounters(){
+  ui.turnInfo.textContent = "turn: " + turnCount;
+  ui.chunkInfo.textContent = "chunk: " + chunkCount;
+  ui.queueInfo.textContent = "queue: " + sendQueue.length;
+  ui.sendingInfo.textContent = "sending: " + (sending ? "true" : "false");
+}
+function resetStateAll(){
+  turnCount=0; chunkCount=0;
+  pcmBytesQueue=[]; sendQueue=[]; sending=false;
+  pendingUserChunks=[]; currentAssistantText="";
+  updateCounters(); setStatus("","未接続"); logDebug("");
+}
 
-// binary
+// ---------- binary helpers ----------
 function concatUint8(arrays){
   const total=arrays.reduce((s,a)=>s+a.length,0);
   const out=new Uint8Array(total);
@@ -203,7 +244,7 @@ function base64ToUint8(b64){
   return out;
 }
 
-// audio convert
+// ---------- audio conversion ----------
 function floatToPCM16Bytes(float32){
   const buf=new ArrayBuffer(float32.length*2);
   const view=new DataView(buf);
@@ -230,10 +271,13 @@ function downsampleTo16kAndConvertToPCM16(float32, inRate){
   return floatToPCM16Bytes(out);
 }
 
-// WS
+// ---------- WebSocket ----------
 function wsSend(obj){
-  if(ws && ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  if(ws && ws.readyState===WebSocket.OPEN){
+    ws.send(JSON.stringify(obj));
+  }
 }
+
 async function connectWS(){
   const key=ui.apiKey.value.trim();
   if(!key) throw new Error("API Key が空です");
@@ -253,7 +297,6 @@ async function connectWS(){
           temperature: 0.4,
           maxOutputTokens: 1024
         },
-        // 空オブジェクトでOK（type has no fields）
         inputAudioTranscription: {},
         outputAudioTranscription: {},
         ...(systemInstruction ? { systemInstruction } : {})
@@ -261,21 +304,41 @@ async function connectWS(){
     });
   };
 
-  ws.onerror = () => setStatus("bad","WebSocketエラー");
-  ws.onclose = (e) => setStatus("bad","切断: " + (e.reason || ("code="+e.code)));
+  ws.onerror = (e) => {
+    console.log("[WS ERROR]", e);
+    setStatus("bad","WebSocketエラー");
+  };
+
+  ws.onclose = (e) => {
+    console.log("[WS CLOSE]", { code: e.code, reason: e.reason });
+    setStatus("bad","切断: " + (e.reason || ("code="+e.code)));
+    // サーバ側で落ちた場合は録音も止める（要件的に停止＝忘却でOK）
+    if (running) stopSimulation();
+  };
 
   ws.onmessage = async (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
+
+    // ★常にログ（要望）
+    console.log("[WS IN]", msg);
 
     if(msg.setupComplete){
       setStatus("good","接続完了（録音中）");
       return;
     }
 
-    // ★重要：transcriptionはトップレベルで来ることがある（serverContentと順序保証なし） :contentReference[oaicite:6]{index=6}
-    if (msg.inputTranscription && msg.inputTranscription.text) {
-      const t = msg.inputTranscription.text.trim();
+    // 転写は serverContent 内で来るのが基本（公式サンプルでも serverContent.outputTranscription）
+    // 実装差分を吸収してトップレベルも一応拾う（来てもOKにする）
+    const sc = msg.serverContent || null;
+
+    const inputT =
+      (sc && sc.inputTranscription && sc.inputTranscription.text) ||
+      (msg.inputTranscription && msg.inputTranscription.text) ||
+      "";
+
+    if (inputT) {
+      const t = String(inputT).trim();
       if (t && pendingUserChunks.length > 0) {
         const last = pendingUserChunks[pendingUserChunks.length - 1];
         const bodyEl = last.domEl.querySelector(".text");
@@ -283,31 +346,41 @@ async function connectWS(){
       }
     }
 
-    if (msg.outputTranscription && msg.outputTranscription.text) {
-      currentAssistantText += msg.outputTranscription.text;
+    const outputT =
+      (sc && sc.outputTranscription && sc.outputTranscription.text) ||
+      (msg.outputTranscription && msg.outputTranscription.text) ||
+      "";
+
+    if (outputT) {
+      currentAssistantText += String(outputT);
+      console.log("[AI OUTPUT TRANSCRIPTION +]", String(outputT));
     }
 
-    // serverContent: turnComplete や modelTurn(audio) はこっち
-    if (msg.serverContent) {
-      const sc = msg.serverContent;
-
-      // 出力音声（任意再生）
-      if (ui.playAudio.checked && sc.modelTurn && Array.isArray(sc.modelTurn.parts)) {
-        for (const part of sc.modelTurn.parts) {
-          if (part.inlineData && part.inlineData.data && part.inlineData.mimeType && part.inlineData.mimeType.startsWith("audio/pcm")) {
-            try { await playPcm24k(part.inlineData.data); } catch {}
-          }
+    // AI音声（任意再生）
+    if (ui.playAudio.checked && sc && sc.modelTurn && Array.isArray(sc.modelTurn.parts)) {
+      for (const part of sc.modelTurn.parts) {
+        if (part.inlineData && part.inlineData.data && part.inlineData.mimeType && part.inlineData.mimeType.startsWith("audio/pcm")) {
+          try { await playPcm24k(part.inlineData.data); } catch (e) { console.log("[PLAYBACK ERROR]", e); }
         }
       }
+    }
 
-      if (sc.turnComplete) {
-        const out = (currentAssistantText || "").trim();
-        if (out) {
-          addMessage("ai", out, ["outputTranscription", "turnComplete"]);
-          turnCount++; updateCounters();
-        }
-        currentAssistantText = "";
+    // turnCompleteを受けたら「AIメッセージ確定」+「次の送信へ」
+    if (sc && sc.turnComplete) {
+      const out = (currentAssistantText || "").trim();
+      if (out) {
+        addMessage("ai", out, ["outputTranscription", "turnComplete"]);
+        console.log("[AI TURN COMPLETE TEXT]", out);
+        turnCount++;
+      } else {
+        console.log("[AI TURN COMPLETE] (no transcript text)");
       }
+      currentAssistantText = "";
+
+      // ★ここが重要：前ターン完了 → 次のキュー送信
+      sending = false;
+      updateCounters();
+      maybeSendNext();
     }
   };
 
@@ -318,7 +391,7 @@ async function connectWS(){
   });
 }
 
-// AudioWorklet
+// ---------- AudioWorklet ----------
 function makeCaptureWorkletURL(){
   const code = `
   class CaptureProcessor extends AudioWorkletProcessor {
@@ -326,14 +399,13 @@ function makeCaptureWorkletURL(){
       const input = inputs[0];
       const output = outputs[0];
 
-      // pass-through（ただし下流で gain=0 にするので無音）
+      // pass-through (下流で gain=0)
       if (input && input[0] && output && output[0]) {
         output[0].set(input[0]);
         const copy = new Float32Array(input[0].length);
         copy.set(input[0]);
         this.port.postMessage(copy.buffer, [copy.buffer]);
       } else if (output && output[0]) {
-        // 何も無ければ無音を出す（ノードを生かす）
         output[0].fill(0);
       }
       return true;
@@ -349,6 +421,7 @@ async function startMic(){
     audio: { channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true },
     video:false
   });
+
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
   const url = makeCaptureWorkletURL();
@@ -357,7 +430,6 @@ async function startMic(){
 
   sourceNode = audioCtx.createMediaStreamSource(mediaStream);
 
-  // ★出力1にする（destinationへ繋ぐため）
   workletNode = new AudioWorkletNode(audioCtx, "capture-processor", {
     numberOfInputs: 1,
     numberOfOutputs: 1,
@@ -365,7 +437,7 @@ async function startMic(){
     channelCount: 1
   });
 
-  // ★destinationに無音接続（Chromeで処理が止まるのを回避） :contentReference[oaicite:7]{index=7}
+  // keep alive (無音でdestinationへ接続)
   keepAliveGain = audioCtx.createGain();
   keepAliveGain.gain.value = 0;
   workletNode.connect(keepAliveGain).connect(audioCtx.destination);
@@ -398,32 +470,69 @@ function stopMic(){
   }
 }
 
-// send chunk
-function flushCycleSend(){
-  if(!ws || ws.readyState!==WebSocket.OPEN) return;
+// ---------- Chunk queue & send sequencing ----------
+function flushCycleToQueue(){
   if(pcmBytesQueue.length===0) return;
 
   const merged = concatUint8(pcmBytesQueue);
   pcmBytesQueue = [];
 
   const base64 = uint8ToBase64(merged);
-  chunkCount++; updateCounters();
+  chunkCount++;
 
-  const domEl = addMessage("you", `Audio chunk #${chunkCount} 送信（${merged.length} bytes / pcm16@16k）`, ["audio","chunk"]);
+  // UI: ユーザー送信 “予定” を表示（ここではキュー追加）
+  const domEl = addMessage("you", `Audio chunk #${chunkCount} をキュー追加（${merged.length} bytes / pcm16@16k）`, ["queued","audio"]);
   pendingUserChunks.push({id:chunkCount, domEl});
 
+  sendQueue.push({ chunkId: chunkCount, base64, bytesLen: merged.length });
+  updateCounters();
+
+  // 送れるなら送る
+  maybeSendNext();
+}
+
+function maybeSendNext(){
+  if(!ws || ws.readyState!==WebSocket.OPEN) return;
+  if(sending) return;
+  if(sendQueue.length===0) return;
+
+  const item = sendQueue.shift();
+  sending = true;
+  updateCounters();
+
+  // UI: キュー→送信中に表示差し替え（該当msgを探して追記）
+  const entry = pendingUserChunks.find(x => x.id === item.chunkId);
+  if(entry){
+    const bodyEl = entry.domEl.querySelector(".text");
+    bodyEl.textContent = `Audio chunk #${item.chunkId} を送信（${item.bytesLen} bytes / pcm16@16k）`;
+    entry.domEl.querySelectorAll(".pill").forEach(()=>{});
+  }
+
+  console.log("[WS OUT] send clientContent chunkId=", item.chunkId, "bytes=", item.bytesLen);
+
+  // ★turnComplete=true を「順番に」送る（前が終わるまで次を送らない）
   wsSend({
     clientContent: {
       turns: [{
         role: "user",
-        parts: [{ inlineData: { mimeType:"audio/pcm;rate=16000", data: base64 } }]
+        parts: [{ inlineData: { mimeType:"audio/pcm;rate=16000", data: item.base64 } }]
       }],
       turnComplete: true
     }
   });
+
+  // 安全策：もし何らかの理由で turnComplete が返らない場合に備えタイムアウト解除
+  setTimeout(() => {
+    if (sending) {
+      console.log("[WARN] turnComplete timeout → force unlock sending");
+      sending = false;
+      updateCounters();
+      maybeSendNext();
+    }
+  }, 20000);
 }
 
-// optional playback (assume 24k PCM16LE)
+// ---------- optional playback (assume 24k PCM16LE) ----------
 async function playPcm24k(base64Pcm){
   const bytes = base64ToUint8(base64Pcm);
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -433,21 +542,25 @@ async function playPcm24k(base64Pcm){
     const s = dv.getInt16(i*2, true);
     float32[i] = s / 32768;
   }
+
   if(!playbackCtx) playbackCtx = new (window.AudioContext || window.webkitAudioContext)();
   const buffer = playbackCtx.createBuffer(1, float32.length, 24000);
   buffer.copyToChannel(float32,0);
+
   const src = playbackCtx.createBufferSource();
   src.buffer = buffer;
   src.connect(playbackCtx.destination);
   src.start();
 }
 
-// control
+// ---------- Control ----------
 async function startSimulation(){
   if(running) return;
   running = true;
+
   ui.btnStart.disabled = true;
   ui.btnStop.disabled = false;
+
   setStatus("", "接続準備中…");
 
   try{
@@ -455,11 +568,17 @@ async function startSimulation(){
     await startMic();
 
     const cycle = Math.max(1, Math.min(15, Number(ui.cycleSec.value || 3)));
-    cycleTimer = setInterval(flushCycleSend, cycle*1000);
+    cycleTimer = setInterval(flushCycleToQueue, cycle*1000);
 
-    logDebug(`<div class="small">cycle: <b>${cycle}s</b> / responseModalities: <b>AUDIO</b> / transcription: <b>ON</b></div>`);
-    addMessage("ai", "接続しました。話しかけてください。", ["system"]);
+    logDebug(`<div class="small">
+      cycle: <b>${cycle}s</b> / send: <b>sequential (wait turnComplete)</b><br/>
+      Tip: queueが増え続ける場合は cycle秒数を少し上げると安定しやすいです。
+    </div>`);
+
+    addMessage("ai", "接続しました。話しかけてください。（AI返答は console.log にも常に出ます）", ["system"]);
+    updateCounters();
   }catch(err){
+    console.log("[START ERROR]", err);
     setStatus("bad", "開始失敗: " + err.message);
     await stopSimulation();
   }
@@ -467,12 +586,17 @@ async function startSimulation(){
 
 async function stopSimulation(){
   running = false;
+
   ui.btnStart.disabled = false;
   ui.btnStop.disabled = true;
 
   if(cycleTimer){ clearInterval(cycleTimer); cycleTimer=null; }
 
+  // 停止＝忘却：未送信/送信待ちは破棄
   pcmBytesQueue = [];
+  sendQueue = [];
+  sending = false;
+
   stopMic();
 
   if(ws){
@@ -487,6 +611,7 @@ async function stopSimulation(){
 ui.btnStart.addEventListener("click", startSimulation);
 ui.btnStop.addEventListener("click", stopSimulation);
 ui.btnClear.addEventListener("click", () => clearChat());
+
 resetStateAll();
 </script>
 </body>
