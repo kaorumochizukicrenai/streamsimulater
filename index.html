@@ -330,6 +330,7 @@ async function connectWS(){
   
     console.log("[WS OUT][setup]", setup); // ★要望：console.log
     wsSend(setup);
+    console.log("[DEBUG] setup sent, waiting for setupComplete...");
   };
   /*　↑　2026/02/01 16:56 変更　*/
 
@@ -344,6 +345,8 @@ async function connectWS(){
     if (running) stopSimulation();
   };
 
+  /*　↓　2026/02/01 17:15 変更　*/
+  /*
   ws.onmessage = async (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
@@ -405,6 +408,99 @@ async function connectWS(){
       currentAssistantText = "";
     }
   };
+  */
+
+  ws.onmessage = async (ev) => {
+    // まず“生”を必ずログ（ここが重要）
+    console.log("[WS RAW IN]", ev.data);
+  
+    let text = null;
+  
+    try {
+      if (typeof ev.data === "string") {
+        text = ev.data;
+      } else if (ev.data instanceof Blob) {
+        text = await ev.data.text();
+      } else if (ev.data instanceof ArrayBuffer) {
+        text = new TextDecoder("utf-8", { fatal: false }).decode(ev.data);
+      } else {
+        // 念のため（型が想定外でも落ちないように）
+        text = String(ev.data);
+      }
+    } catch (e) {
+      console.log("[WS IN decode error]", e);
+      return;
+    }
+  
+    // デコード後のテキストもログ
+    console.log("[WS TEXT IN]", text);
+  
+    // JSONを試す（ダメならそのまま終了）
+    let msg;
+    try {
+      msg = JSON.parse(text);
+    } catch (e) {
+      console.log("[WS IN not JSON]", e);
+      return;
+    }
+  
+    // ここでようやくJSONとしてのログ
+    console.log("[WS IN]", msg);
+  
+    // ---- 以降はあなたの既存処理（setupComplete / serverContent etc）をそのまま ----
+    if (msg.setupComplete) {
+      setupDone = true;
+      setStatus("good", "接続完了（録音中）");
+      return;
+    }
+  
+    const sc = msg.serverContent || null;
+  
+    const inputT =
+      (sc && sc.inputTranscription && sc.inputTranscription.text) ||
+      (msg.inputTranscription && msg.inputTranscription.text) ||
+      "";
+  
+    if (inputT) {
+      const t = String(inputT).trim();
+      if (t && pendingUserChunks.length > 0) {
+        const last = pendingUserChunks[pendingUserChunks.length - 1];
+        last.domEl.querySelector(".text").textContent += "\n\n[inputTranscription]\n" + t;
+      }
+    }
+  
+    const outputT =
+      (sc && sc.outputTranscription && sc.outputTranscription.text) ||
+      (msg.outputTranscription && msg.outputTranscription.text) ||
+      "";
+  
+    if (outputT) {
+      currentAssistantText += String(outputT);
+      console.log("[AI OUT +]", String(outputT));
+    }
+  
+    if (ui.playAudio.checked && sc && sc.modelTurn && Array.isArray(sc.modelTurn.parts)) {
+      for (const part of sc.modelTurn.parts) {
+        if (part.inlineData && part.inlineData.data && part.inlineData.mimeType && part.inlineData.mimeType.startsWith("audio/pcm")) {
+          try { await playPcm24k(part.inlineData.data); } catch (e) { console.log("[PLAYBACK ERROR]", e); }
+        }
+      }
+    }
+  
+    if (sc && sc.turnComplete) {
+      const out = (currentAssistantText || "").trim();
+      if (out) {
+        addMessage("ai", out, ["outputTranscription", "turnComplete"]);
+        console.log("[AI TURN COMPLETE]", out);
+        turnCount++;
+        updateCounters();
+      } else {
+        console.log("[AI TURN COMPLETE] (no transcript text)");
+      }
+      currentAssistantText = "";
+    }
+  };
+  /*　↑　2026/02/01 17:15 変更　*/
 
   await new Promise((resolve, reject) => {
     const t = setTimeout(()=>reject(new Error("WS接続タイムアウト")), 8000);
