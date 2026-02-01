@@ -249,8 +249,14 @@ function addMessage(role, text, extraPills=[]){
   body.textContent=text;
 
   msg.appendChild(meta); msg.appendChild(body);
-  ui.chat.appendChild(msg);
-  ui.chat.scrollTop=ui.chat.scrollHeight;
+
+  /*　↓　2026/02/01 18:29　追加　*/
+  ui.logAI.appendChild(msg);
+  ui.logAI.scrollTop=ui.logAI.scrollHeight;
+  //ui.chat.appendChild(msg);
+  //ui.chat.scrollTop=ui.chat.scrollHeight;
+  /*　↑　2026/02/01 18:29　追加　*/
+  
   return msg;
 }
 
