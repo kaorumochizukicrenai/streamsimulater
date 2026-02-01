@@ -105,6 +105,8 @@
     </div>
   </section>
 
+  <!--　↓　2026/02/01 18:08 修正　-->
+  <!--
   <section class="card">
     <div class="hd">
       <div class="title">チャットログ</div>
@@ -115,6 +117,39 @@
     </div>
     <div class="chat" id="chat"></div>
   </section>
+  -->
+
+  <section class="card">
+    <div class="hd">
+      <div class="title">AIからの返答（outputTranscription）</div>
+      <div class="status">
+        <span class="pill" id="turnInfo">turn: 0</span>
+      </div>
+    </div>
+    <div class="chat" id="logAI"></div>
+  </section>
+  
+  <section class="card">
+    <div class="hd">
+      <div class="title">あなたの発声テキスト（inputTranscription）</div>
+      <div class="status">
+        <span class="pill" id="chunkInfo">chunk: 0</span>
+      </div>
+    </div>
+    <div class="chat" id="logUser"></div>
+  </section>
+  
+  <section class="card">
+    <div class="hd">
+      <div class="title">その他ログ（WS / debug / error）</div>
+      <div class="status">
+        <span class="pill" id="connInfo">conn: -</span>
+      </div>
+    </div>
+    <div class="chat" id="logOther"></div>
+  </section>
+  <!--　↑　2026/02/01 18:08 修正　-->
+
 </main>
 
 <script>
@@ -134,7 +169,13 @@ const ui = {
   statusDot: el("statusDot"),
   statusText: el("statusText"),
   debugBox: el("debugBox"),
-  chat: el("chat"),
+  /*　↓　2026/02/01 18:11　追加　*/
+  //chat: el("chat"),
+  logAI: el("logAI"),
+  logUser: el("logUser"),
+  logOther: el("logOther"),
+  connInfo: el("connInfo"),
+  /*　↑　2026/02/01 18:11　追加　*/
   turnInfo: el("turnInfo"),
   chunkInfo: el("chunkInfo"),
 };
@@ -176,7 +217,16 @@ function setStatus(kind, text) {
   if (kind==="bad") ui.statusDot.classList.add("bad");
 }
 function logDebug(html){ ui.debugBox.innerHTML = html; }
-function clearChat(){ ui.chat.innerHTML = ""; }
+
+/*　↓　2026/02/01 18:11 修正　*/
+//function clearChat(){ ui.chat.innerHTML = ""; }
+function clearAllLogs() {
+  ui.logAI.innerHTML = "";
+  ui.logUser.innerHTML = "";
+  ui.logOther.innerHTML = "";
+}
+/*　↑　2026/02/01 18:11 修正　*/
+
 function addMessage(role, text, extraPills=[]){
   const msg=document.createElement("div");
   msg.className="msg " + (role==="you" ? "you":"ai");
@@ -203,6 +253,50 @@ function addMessage(role, text, extraPills=[]){
   ui.chat.scrollTop=ui.chat.scrollHeight;
   return msg;
 }
+
+/*　↓　2026/02/01 18:11　追加　*/
+function appendLine(containerEl, label, text, pills = []) {
+  const msg = document.createElement("div");
+  msg.className = "msg";
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+
+  const roleEl = document.createElement("span");
+  roleEl.className = "role";
+  roleEl.textContent = label;
+  meta.appendChild(roleEl);
+
+  const tsEl = document.createElement("span");
+  tsEl.className = "pill";
+  tsEl.textContent = new Date().toLocaleTimeString();
+  meta.appendChild(tsEl);
+
+  for (const p of pills) {
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    pill.textContent = p;
+    meta.appendChild(pill);
+  }
+
+  const body = document.createElement("div");
+  body.className = "text";
+  body.textContent = text;
+
+  msg.appendChild(meta);
+  msg.appendChild(body);
+
+  containerEl.appendChild(msg);
+  containerEl.scrollTop = containerEl.scrollHeight;
+
+  return msg;
+}
+
+function logAI(text, pills=[])    { return appendLine(ui.logAI,   "AI",   text, pills); }
+function logUser(text, pills=[])  { return appendLine(ui.logUser, "YOU",  text, pills); }
+function logOther(text, pills=[]) { return appendLine(ui.logOther,"LOG",  text, pills); }
+/*　↑　2026/02/01 18:11　追加　*/
+
 function updateCounters(){
   ui.turnInfo.textContent = "turn: " + turnCount;
   ui.chunkInfo.textContent = "chunk: " + chunkCount;
@@ -361,7 +455,7 @@ async function connectWS(){
         } : {})
       }
     };
-  
+    logOther("[WS OUT][setup] sent", ["setup"]);
     console.log("[WS OUT][setup]", setup);
     console.log("[DEBUG] setup sent, waiting for setupComplete...");
     wsSend(setup);
@@ -480,6 +574,7 @@ async function connectWS(){
   
     // ここでようやくJSONとしてのログ
     console.log("[WS IN]", msg);
+    logOther("[WS IN] " + JSON.stringify(msg), ["ws"]);
   
     // ---- 以降はあなたの既存処理（setupComplete / serverContent etc）をそのまま ----
     if (msg.setupComplete) {
@@ -494,7 +589,9 @@ async function connectWS(){
       (sc && sc.inputTranscription && sc.inputTranscription.text) ||
       (msg.inputTranscription && msg.inputTranscription.text) ||
       "";
-  
+
+    /*　↓　2026/02/01 18:15 変更　*/
+    /*
     if (inputT) {
       const t = String(inputT).trim();
       if (t && pendingUserChunks.length > 0) {
@@ -502,6 +599,16 @@ async function connectWS(){
         last.domEl.querySelector(".text").textContent += "\n\n[inputTranscription]\n" + t;
       }
     }
+    */
+    if (inputT) {
+      const t = String(inputT).trim();
+      if (t) {
+        logUser(t, ["inputTranscription"]);
+        console.log("[YOU SAID]", t);
+      }
+    }
+    /*　↑　2026/02/01 18:15 変更　*/
+
   
     const outputT =
       (sc && sc.outputTranscription && sc.outputTranscription.text) ||
@@ -512,7 +619,7 @@ async function connectWS(){
       currentAssistantText += String(outputT);
       console.log("[AI OUT +]", String(outputT));
     }
-  
+
     if (ui.playAudio.checked && sc && sc.modelTurn && Array.isArray(sc.modelTurn.parts)) {
       for (const part of sc.modelTurn.parts) {
         if (part.inlineData && part.inlineData.data && part.inlineData.mimeType && part.inlineData.mimeType.startsWith("audio/pcm")) {
@@ -520,7 +627,9 @@ async function connectWS(){
         }
       }
     }
-  
+
+    /*　↓　2026/02/01 18:15 変更　*/
+    /*
     if (sc && sc.turnComplete) {
       const out = (currentAssistantText || "").trim();
       if (out) {
@@ -533,6 +642,22 @@ async function connectWS(){
       }
       currentAssistantText = "";
     }
+    */
+    // turnComplete時に確定表示
+    if (sc && sc.turnComplete) {
+      const out = (currentAssistantText || "").trim();
+      if (out) {
+        logAI(out, ["turnComplete"]);
+        console.log("[AI TURN COMPLETE]", out);
+        turnCount++;
+        updateCounters();
+      } else {
+        logOther("[AI turnComplete but no transcript text]", ["warn"]);
+      }
+      currentAssistantText = "";
+    }
+    /*　↑　2026/02/01 18:15 変更　*/
+    
   };
   /*　↑　2026/02/01 17:15 変更　*/
 
@@ -686,6 +811,7 @@ function flushCycleSendRealtime(){
   };
 
   console.log("[WS OUT][realtimeInput.audio]", { chunk: chunkCount, bytes: merged.length });
+  logOther(`Sent audio chunk #${chunkCount} (${merged.length} bytes)`, ["audio","out"]);
   wsSend(payload);
 }
 /*　↑　2026/02/01 16:57 変更　*/
@@ -768,7 +894,12 @@ async function stopSimulation(){
     ws=null;
   }
 
-  clearChat();
+  /*　↓　2026/02/01 18:13 追加　*/
+  //clearChat();
+  clearAllLogs()；
+  /*　↑　2026/02/01 18:13 追加　*/
+
+  
   resetStateAll();
 }
 
@@ -796,7 +927,11 @@ function sanitizeSystemText(str) {
 
 ui.btnStart.addEventListener("click", startSimulation);
 ui.btnStop.addEventListener("click", stopSimulation);
-ui.btnClear.addEventListener("click", () => clearChat());
+
+/*　↓　2026/02/01 18:13 追加　*/
+ui.btnClear.addEventListener("click", () => clearAllLogs());
+//ui.btnClear.addEventListener("click", () => clearChat());
+/*　↑　2026/02/01 18:13 追加　*/
 
 resetStateAll();
 </script>
