@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Gemini Native Audio Dialog - Chunked Mic → Chat (Single HTML)</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --panel: #10182a;
+      --panel2: #0f1524;
+      --text: #e7ecff;
+      --muted: #aab3d6;
+      --accent: #7aa2ff;
+      --bad: #ff6b6b;
+      --good: #33d69f;
+      --border: rgba(255,255,255,.08);
+      --shadow: rgba(0,0,0,.35);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif;
+      background: radial-gradient(1000px 700px at 20% 0%, #12224d 0%, var(--bg) 55%);
+      color: var(--text);
+    }
+    header {
+      padding: 18px 16px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10,14,24,.75);
+      backdrop-filter: blur(10px);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+    header h1 {
+      margin: 0 0 6px;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: .2px;
+    }
+    header .sub {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    main {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 360px 1fr;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 10px 25px var(--shadow);
+      overflow: hidden;
+    }
+    .card .hd {
+      padding: 12px 12px 10px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255,255,255,.02);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .card .hd .title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .card .bd {
+      padding: 12px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 10px 0 6px;
+    }
+    input, textarea, select {
+      width: 100%;
+      padding: 10px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(10, 14, 24, .55);
+      color: var(--text);
+      outline: none;
+    }
+    input::placeholder, textarea::placeholder { color: rgba(170,179,214,.65); }
+    textarea { min-height: 70px; resize: vertical; }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    @media (max-width: 980px) {
+      .row { grid-template-columns: 1fr; }
+    }
+
+    .btns {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    button {
+      border: 1px solid var(--border);
+      background: rgba(122,162,255,.15);
+      color: var(--text);
+      padding: 10px 12px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-weight: 700;
+      letter-spacing: .2px;
+    }
+    button:hover { background: rgba(122,162,255,.22); }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: .55;
+    }
+    .danger { background: rgba(255,107,107,.15); }
+    .danger:hover { background: rgba(255,107,107,.22); }
+    .ghost { background: rgba(255,255,255,.04); }
+    .ghost:hover { background: rgba(255,255,255,.06); }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.18);
+      box-shadow: 0 0 0 3px rgba(255,255,255,.04);
+    }
+    .dot.good { background: var(--good); box-shadow: 0 0 0 3px rgba(51,214,159,.15); }
+    .dot.bad  { background: var(--bad);  box-shadow: 0 0 0 3px rgba(255,107,107,.15); }
+
+    .chat {
+      height: calc(100vh - 170px);
+      min-height: 520px;
+      overflow: auto;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.01));
+    }
+    .msg {
+      max-width: 850px;
+      margin: 0 0 10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(16,24,42,.75);
+      box-shadow: 0 10px 20px rgba(0,0,0,.18);
+    }
+    .msg.you {
+      margin-left: auto;
+      background: rgba(122,162,255,.12);
+    }
+    .meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .role {
+      font-weight: 800;
+      color: var(--text);
+    }
+    .pill {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.04);
+      color: var(--muted);
+    }
+    .text {
+      white-space: pre-wrap;
+      line-height: 1.45;
+      font-size: 13px;
+    }
+    .small {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.35;
+      margin-top: 8px;
+    }
+    .warn {
+      color: rgba(255,217,102,.95);
+    }
+    .err {
+      color: rgba(255,107,107,.95);
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Gemini 2.5 Flash Native Audio Dialog（音声→AI、AI→チャット表示）テスト</h1>
+  <p class="sub">
+    ブラウザのみ / HTML1枚。録音を数秒ごとに区切って送信し、同一セッション中は文脈を保持。停止で忘却（WSを閉じてUIもクリア）。
+  </p>
+</header>
+
+<main>
+  <!-- LEFT: Control Panel -->
+  <section class="card">
+    <div class="hd">
+      <div class="title">設定 / 操作</div>
+      <div class="status" id="statusLine">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">未接続</span>
+      </div>
+    </div>
+    <div class="bd">
+      <label>API Key（テスト用・クライアント直置き）</label>
+      <input id="apiKey" type="password" placeholder="AIza..." autocomplete="off" />
+
+      <label>モデル名</label>
+      <input id="modelName" type="text" value="models/gemini-2.5-flash-native-audio-preview-12-2025" />
+
+      <div class="row">
+        <div>
+          <label>1クール秒数（録音→送信の区切り）</label>
+          <input id="cycleSec" type="number" min="1" max="15" step="1" value="3" />
+        </div>
+        <div>
+          <label>送信モード</label>
+          <select id="sendMode">
+            <option value="clientContent" selected>clientContent（クール単位で turnComplete=true）</option>
+            <option value="realtimeInput">realtimeInput（連続ストリーム / VAD任せ）</option>
+          </select>
+        </div>
+      </div>
+
+      <label>システム指示（任意）</label>
+      <textarea id="systemInstruction" placeholder="例：あなたは簡潔に日本語で返答する音声アシスタントです。途中で区切られたら、続きが必要か判断して返答を保留してもよい。"></textarea>
+
+      <div class="btns">
+        <button id="btnStart">シミュレート開始</button>
+        <button id="btnStop" class="danger" disabled>シミュレート停止</button>
+        <button id="btnClear" class="ghost">表示クリア</button>
+      </div>
+
+      <p class="small warn">
+        ※ ブラウザでマイク取得→WebAudioで16kHz/16bit PCM化して送信します。<br/>
+        ※ 本番ではエフェメラルトークン推奨ですが、ここは要件どおり未考慮です。
+      </p>
+
+      <div class="small" id="debugBox"></div>
+    </div>
+  </section>
+
+  <!-- RIGHT: Chat -->
+  <section class="card">
+    <div class="hd">
+      <div class="title">チャットログ</div>
+      <div class="status">
+        <span class="pill" id="turnInfo">turn: 0</span>
+        <span class="pill" id="chunkInfo">chunk: 0</span>
+      </div>
+    </div>
+    <div class="chat" id="chat"></div>
+  </section>
+</main>
+
+<script>
+/**
+ * Gemini Live API (WebSockets / BidiGenerateContent) にブラウザから直接接続して
+ * - マイク録音を N 秒ごとに区切って送信
+ * - 返答（テキスト）をチャット表示
+ * - StopでWSを閉じ、会話コンテキストを破棄
+ *
+ * 参考:
+ * - WebSocket endpoint / message format: wss://generativelanguage.googleapis.com/ws/.../BidiGenerateContent (v1beta)
+ * - API keyは ?key= で付与可能（テスト前提）
+ */
+
+const WS_BASE =
+  "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+
+const el = (id) => document.getElementById(id);
+
+const ui = {
+  apiKey: el("apiKey"),
+  modelName: el("modelName"),
+  cycleSec: el("cycleSec"),
+  sendMode: el("sendMode"),
+  systemInstruction: el("systemInstruction"),
+  btnStart: el("btnStart"),
+  btnStop: el("btnStop"),
+  btnClear: el("btnClear"),
+  statusDot: el("statusDot"),
+  statusText: el("statusText"),
+  debugBox: el("debugBox"),
+  chat: el("chat"),
+  turnInfo: el("turnInfo"),
+  chunkInfo: el("chunkInfo"),
+};
+
+let ws = null;
+
+// Audio
+let audioCtx = null;
+let mediaStream = null;
+let sourceNode = null;
+let processorNode = null;
+
+// State
+let running = false;
+let cycleTimer = null;
+
+let turnCount = 0;
+let chunkCount = 0;
+
+// 1クール分のPCM(16k/16bit)を貯める
+let pcmBytesQueue = []; // Array<Uint8Array>
+
+// 送信した「ユーザーターン」を追跡（transcriptionが届いたら紐付け）
+let pendingUserTurns = []; // [{id, domEl, createdAt}]
+
+// 受信中のアシスタント文字列（turnCompleteまで蓄積）
+let currentAssistantText = "";
+let assistantSpeaking = false;
+
+function setStatus(kind, text) {
+  ui.statusText.textContent = text;
+  ui.statusDot.classList.remove("good", "bad");
+  if (kind === "good") ui.statusDot.classList.add("good");
+  if (kind === "bad") ui.statusDot.classList.add("bad");
+}
+
+function logDebug(html) {
+  ui.debugBox.innerHTML = html;
+}
+
+function addMessage(role, text, extraPills=[]) {
+  const msg = document.createElement("div");
+  msg.className = "msg " + (role === "you" ? "you" : "ai");
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+
+  const roleEl = document.createElement("span");
+  roleEl.className = "role";
+  roleEl.textContent = role === "you" ? "YOU" : "AI";
+  meta.appendChild(roleEl);
+
+  const ts = new Date();
+  const tsEl = document.createElement("span");
+  tsEl.className = "pill";
+  tsEl.textContent = ts.toLocaleTimeString();
+  meta.appendChild(tsEl);
+
+  extraPills.forEach(p => {
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    pill.textContent = p;
+    meta.appendChild(pill);
+  });
+
+  const body = document.createElement("div");
+  body.className = "text";
+  body.textContent = text;
+
+  msg.appendChild(meta);
+  msg.appendChild(body);
+
+  ui.chat.appendChild(msg);
+  ui.chat.scrollTop = ui.chat.scrollHeight;
+
+  return msg;
+}
+
+function clearChat() {
+  ui.chat.innerHTML = "";
+}
+
+function updateCounters() {
+  ui.turnInfo.textContent = "turn: " + turnCount;
+  ui.chunkInfo.textContent = "chunk: " + chunkCount;
+}
+
+function resetStateAll() {
+  turnCount = 0;
+  chunkCount = 0;
+  pcmBytesQueue = [];
+  pendingUserTurns = [];
+  currentAssistantText = "";
+  assistantSpeaking = false;
+  updateCounters();
+  setStatus("", "未接続");
+  logDebug("");
+}
+
+function concatUint8(arrays) {
+  const total = arrays.reduce((sum, a) => sum + a.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const a of arrays) {
+    out.set(a, offset);
+    offset += a.length;
+  }
+  return out;
+}
+
+function uint8ToBase64(u8) {
+  // 大きい配列でも落ちにくいように分割
+  const chunk = 0x8000;
+  let binary = "";
+  for (let i = 0; i < u8.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function downsampleTo16kAndConvertToPCM16(float32, inSampleRate) {
+  const outSampleRate = 16000;
+  if (inSampleRate === outSampleRate) {
+    return floatToPCM16Bytes(float32);
+  }
+  const ratio = inSampleRate / outSampleRate;
+  const outLength = Math.round(float32.length / ratio);
+  const out = new Float32Array(outLength);
+
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+  while (offsetResult < out.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+    // 平均でダウンサンプル（簡易）
+    let accum = 0, count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < float32.length; i++) {
+      accum += float32[i];
+      count++;
+    }
+    out[offsetResult] = accum / Math.max(1, count);
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return floatToPCM16Bytes(out);
+}
+
+function floatToPCM16Bytes(float32) {
+  const buffer = new ArrayBuffer(float32.length * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < float32.length; i++) {
+    let s = Math.max(-1, Math.min(1, float32[i]));
+    // 16-bit signed
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Uint8Array(buffer);
+}
+
+// -------------------- WebSocket (Gemini Live API) --------------------
+
+function wsSend(obj) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify(obj));
+}
+
+async function connectWS() {
+  const key = ui.apiKey.value.trim();
+  if (!key) throw new Error("API Key が空です");
+
+  const url = WS_BASE + "?key=" + encodeURIComponent(key);
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    setStatus("good", "接続中（setup送信）");
+    const model = ui.modelName.value.trim();
+    const systemInstruction = ui.systemInstruction.value.trim();
+
+    // 初回 setup メッセージ
+    // responseModalities を TEXT にして「AI→チャット」だけを受け取る
+    const setup = {
+      setup: {
+        model,
+        generationConfig: {
+          responseModalities: ["TEXT"],
+          // ここは好みで調整可能
+          temperature: 0.4,
+          maxOutputTokens: 1024,
+        },
+        ...(systemInstruction ? { systemInstruction } : {}),
+      }
+    };
+    wsSend(setup);
+  };
+
+  ws.onclose = (e) => {
+    setStatus("bad", "切断: " + (e.reason || ("code=" + e.code)));
+  };
+
+  ws.onerror = () => {
+    setStatus("bad", "WebSocketエラー");
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+
+    // setupComplete
+    if (msg.setupComplete) {
+      setStatus("good", "接続完了（録音待機）");
+      return;
+    }
+
+    // serverContent / transcription など
+    if (msg.serverContent) {
+      const sc = msg.serverContent;
+
+      // 入力音声の転写（来ない場合もあります。順序保証もありません）
+      if (sc.inputTranscription && sc.inputTranscription.text) {
+        const t = sc.inputTranscription.text.trim();
+        if (t && pendingUserTurns.length > 0) {
+          // 直近のユーザーターンに付与（雑に）
+          const last = pendingUserTurns[pendingUserTurns.length - 1];
+          const bodyEl = last.domEl.querySelector(".text");
+          bodyEl.textContent = bodyEl.textContent + "\n\n[transcription]\n" + t;
+        }
+      }
+
+      // AIの生成（テキスト）
+      if (sc.modelTurn && Array.isArray(sc.modelTurn.parts)) {
+        assistantSpeaking = true;
+        for (const part of sc.modelTurn.parts) {
+          if (typeof part.text === "string") {
+            currentAssistantText += part.text;
+          }
+        }
+      }
+
+      // ターン完了で表示確定
+      if (sc.turnComplete) {
+        if (assistantSpeaking) {
+          const out = (currentAssistantText || "").trim();
+          if (out) {
+            addMessage("ai", out, ["turnComplete"]);
+            turnCount++;
+            updateCounters();
+          }
+        }
+        currentAssistantText = "";
+        assistantSpeaking = false;
+      }
+    }
+  };
+
+  // openを待つ
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("WS接続タイムアウト")), 8000);
+    ws.addEventListener("open", () => { clearTimeout(t); resolve(); }, { once: true });
+    ws.addEventListener("error", () => { clearTimeout(t); reject(new Error("WS接続失敗")); }, { once: true });
+  });
+}
+
+// -------------------- Audio capture (WebAudio) --------------------
+
+async function startMic() {
+  mediaStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+    video: false
+  });
+
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+
+  // ScriptProcessorは古いが「HTML1枚」簡易実装に向く
+  const bufferSize = 4096;
+  processorNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+  processorNode.onaudioprocess = (e) => {
+    if (!running) return;
+    const input = e.inputBuffer.getChannelData(0);
+    const pcm16 = downsampleTo16kAndConvertToPCM16(input, audioCtx.sampleRate);
+    pcmBytesQueue.push(pcm16);
+
+    // realtimeInput モードなら「連続で投げる」
+    if (ui.sendMode.value === "realtimeInput") {
+      const base64 = uint8ToBase64(pcm16);
+      wsSend({
+        realtimeInput: {
+          audio: {
+            data: base64,
+            mimeType: "audio/pcm;rate=16000"
+          }
+        }
+      });
+      chunkCount++;
+      updateCounters();
+    }
+  };
+
+  // 接続（出力は使わないが、処理を回すために destination へ）
+  sourceNode.connect(processorNode);
+  processorNode.connect(audioCtx.destination);
+}
+
+function stopMic() {
+  try {
+    if (processorNode) processorNode.disconnect();
+    if (sourceNode) sourceNode.disconnect();
+  } catch {}
+  processorNode = null;
+  sourceNode = null;
+
+  if (mediaStream) {
+    for (const tr of mediaStream.getTracks()) tr.stop();
+    mediaStream = null;
+  }
+  if (audioCtx) {
+    audioCtx.close().catch(()=>{});
+    audioCtx = null;
+  }
+}
+
+function flushCycleSend() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (pcmBytesQueue.length === 0) return;
+
+  const merged = concatUint8(pcmBytesQueue);
+  pcmBytesQueue = [];
+
+  const base64 = uint8ToBase64(merged);
+  chunkCount++;
+  updateCounters();
+
+  // YOUのターンを先に表示
+  const domEl = addMessage(
+    "you",
+    `Audio chunk #${chunkCount} を送信（${merged.length} bytes / pcm16@16k）`,
+    ["audio", "chunk"]
+  );
+
+  pendingUserTurns.push({ id: chunkCount, domEl, createdAt: Date.now() });
+
+  // 送信：クール単位で turnComplete=true
+  // これにより、モデルは「ここまでで返答する or まだ続きが要るので返答を出さない」を選べる
+  wsSend({
+    clientContent: {
+      turns: [
+        {
+          role: "user",
+          parts: [
+            {
+              inlineData: {
+                mimeType: "audio/pcm;rate=16000",
+                data: base64
+              }
+            }
+          ]
+        }
+      ],
+      turnComplete: true
+    }
+  });
+}
+
+// -------------------- Control --------------------
+
+async function startSimulation() {
+  if (running) return;
+  running = true;
+
+  ui.btnStart.disabled = true;
+  ui.btnStop.disabled = false;
+
+  setStatus("", "接続準備中…");
+
+  try {
+    await connectWS();
+    await startMic();
+
+    const cycle = Math.max(1, Math.min(15, Number(ui.cycleSec.value || 3)));
+
+    if (ui.sendMode.value === "clientContent") {
+      // 「クール」ごとにまとめて送る
+      cycleTimer = setInterval(flushCycleSend, cycle * 1000);
+      logDebug(`<div class="small">送信モード: <b>clientContent</b> / cycle: <b>${cycle}s</b></div>`);
+    } else {
+      // realtimeInputは連続送信（クールの概念はUI上のみ）
+      cycleTimer = setInterval(() => {
+        // UI上の区切りっぽくカウンタだけ進める
+        // 実際には onaudioprocess 内で連続送信中
+      }, cycle * 1000);
+      logDebug(`<div class="small">送信モード: <b>realtimeInput</b>（連続） / cycle表示: <b>${cycle}s</b></div>`);
+    }
+
+    addMessage("ai",
+      "接続しました。話しかけてください。\n（テスト：音声が途中で区切れて意味が取りにくい場合、返答せず次のクールを待ってもOKです。）",
+      ["system"]
+    );
+
+  } catch (err) {
+    setStatus("bad", "開始失敗: " + err.message);
+    await stopSimulation();
+  }
+}
+
+async function stopSimulation() {
+  running = false;
+
+  ui.btnStart.disabled = false;
+  ui.btnStop.disabled = true;
+
+  if (cycleTimer) {
+    clearInterval(cycleTimer);
+    cycleTimer = null;
+  }
+
+  // clientContent モードなら、最後に残っている分を送ってもよいが、
+  // 要件「停止で忘れる」なので送らずに破棄する
+  pcmBytesQueue = [];
+
+  // マイク停止
+  stopMic();
+
+  // WSクローズ（＝セッション終了＝文脈破棄）
+  if (ws) {
+    try { ws.close(1000, "user stopped"); } catch {}
+    ws = null;
+  }
+
+  // 会話を忘れる（UIと内部状態もリセット）
+  clearChat();
+  resetStateAll();
+}
+
+ui.btnStart.addEventListener("click", startSimulation);
+ui.btnStop.addEventListener("click", stopSimulation);
+ui.btnClear.addEventListener("click", () => clearChat());
+
+// 初期表示
+resetStateAll();
+</script>
+</body>
+</html>
